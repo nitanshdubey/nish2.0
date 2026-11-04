@@ -45,11 +45,12 @@ export default function Home() {
         className="hud-grid hud-corners relative flex min-h-[600px] flex-col items-center justify-between gap-4 overflow-hidden rounded-xl border border-line bg-base2/40 p-4 lg:min-h-0"
       >
         <div className="relative z-10 flex w-full flex-1 flex-col items-center justify-center gap-4">
-          <VoiceVisualizer
-            state={nish.nishState}
-            intensity={settings.animationIntensity}
-            getLevel={recorder.getLevel}
-          />
+        <VoiceVisualizer
+  state={nish.nishState}
+  intensity={settings.animationIntensity}
+  getLevel={recorder.getLevel}
+  sizeClass="w-[min(32vh,70vw,400px)]"
+/>
 
           <MicrophoneButton
             status={recorder.status}
