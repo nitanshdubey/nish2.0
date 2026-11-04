@@ -59,7 +59,19 @@ export async function callFunction(name: string, opts: CallOptions = {}): Promis
     );
   }
   if (!res.ok) {
-    throw new BackendError('HTTP', `Backend function "${name}" returned status ${res.status}.`, res.status);
+    let detail = '';
+    try {
+      const data = (await res.json()) as { error?: unknown; message?: unknown };
+      detail =
+        typeof data.error === 'string' ? data.error : typeof data.message === 'string' ? data.message : '';
+    } catch {
+      /* body was not JSON */
+    }
+    throw new BackendError(
+      'HTTP',
+      detail || `Backend function "${name}" returned status ${res.status}.`,
+      res.status,
+    );
   }
   return res;
 }

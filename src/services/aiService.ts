@@ -8,7 +8,8 @@ export interface ChatReply {
 
 export interface BackendHealth {
   ok: boolean;
-  openai?: boolean;
+  ai?: boolean;
+  provider?: string;
 }
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

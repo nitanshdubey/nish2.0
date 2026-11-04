@@ -21,13 +21,13 @@ export default function Integrations() {
             detail: 'Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.',
           };
 
-  const openai: { status: IntegrationStatus; detail?: string } =
-    backendVerify === 'online' && health?.openai === true
-      ? { status: 'connected' }
-      : {
-          status: 'configuration-required',
-          detail: 'The key must be stored as a Supabase secret, never in frontend code. Verified via the backend health check.',
-        };
+          const gemini: { status: IntegrationStatus; detail?: string } =
+          backendVerify === 'online' && health?.ai === true
+            ? { status: 'connected' }
+            : {
+                status: 'configuration-required',
+                detail: 'Add GEMINI_API_KEY as a Supabase secret. It is verified by the backend health check and never stored in the frontend.',
+              };
 
   return (
     <div className="mx-auto w-full max-w-5xl p-4 sm:p-6">
@@ -38,11 +38,11 @@ export default function Integrations() {
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <IntegrationCard
+      <IntegrationCard
           icon={Sparkles}
-          name="OpenAI"
-          description="Language model and speech services, accessed only through Supabase Edge Functions."
-          {...openai}
+          name="Google Gemini"
+          description="Free-tier AI model, accessed only through Supabase Edge Functions."
+          {...gemini}
         />
         <IntegrationCard
           icon={Database}
