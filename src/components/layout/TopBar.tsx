@@ -44,7 +44,7 @@ export default function TopBar({ onMenu, onNavigate }: Props) {
         <div className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-accent to-accent2 font-display text-sm font-bold text-white shadow-glow">
           N
         </div>
-        <span className="font-display text-base font-bold tracking-[0.35em]">NISH</span>
+        <span className="font-display text-base font-bold tracking-[0.35em] text-ink">NISH</span>
       </div>
 
       <div className="ml-2 hidden items-center gap-2 sm:flex">
