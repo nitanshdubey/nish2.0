@@ -1,32 +1,38 @@
-# React + TypeScript + Vite
+# NISH — Personal AI Desktop Assistant (frontend v0.1)
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React + TypeScript + Vite + Tailwind + Framer Motion + Lucide.
 
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+## Run
+```bash
+npm install
+npm run dev      # development
+npm run build    # type-check + production build (outputs dist/)
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Deploy (GitHub → Cloudflare Pages)
+Build command: `npm run build` · Output directory: `dist`
+Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as environment variables.
+
+## Modes
+- **Demo mode (default):** text works, replies are clearly labelled samples, microphone
+  permission/recording works, nothing is sent anywhere.
+- **Backend mode:** turn demo off (top bar or Settings → AI). Requests go to Supabase
+  Edge Functions. If env vars are missing, NISH shows an error instead of faking success.
+
+## Backend contract (Supabase Edge Functions, all POST)
+| Function          | Request                                   | Response            |
+|-------------------|-------------------------------------------|---------------------|
+| `nish-health`     | `{}`                                      | `{ ok: true, openai: boolean }` |
+| `nish-chat`       | `{ messages: [{ role, content }] }`       | `{ reply: string }` |
+| `nish-transcribe` | multipart form, field `audio`             | `{ text: string }`  |
+| `nish-tts`        | `{ text, voice, speed }`                  | audio bytes (`audio/*`) |
+
+The OpenAI key lives only in Supabase secrets, never in frontend code.
+
+## Not possible from a website (by design, not simulated)
+Global system-wide shortcut, Windows app control, Chrome tab access. These need a
+future local connector / Chrome extension. The UI shows them as not installed.
+
+## Structure
+`src/components` UI · `src/pages` views · `src/services` backend layer ·
+`src/hooks` recorder + app state · `src/context` providers · `src/lib` helpers.
