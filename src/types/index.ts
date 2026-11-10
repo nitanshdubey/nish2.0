@@ -81,3 +81,9 @@ export interface MemoryItem {
   text: string;
   createdAt: number;
 }
+export type BrowserAction =
+  | { type: 'search_web'; query: string }
+  | { type: 'open_website'; url: string }
+  | { type: 'switch_tab'; query: string };
+
+export type ConnectorStatus = 'checking' | 'connected' | 'not-detected';

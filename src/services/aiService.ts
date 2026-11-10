@@ -1,9 +1,35 @@
-import type { Conversation, Message, Settings } from '../types';
+import type { BrowserAction, Conversation, Message, Settings } from '../types';
 import { BackendError, callFunctionJson } from './supabaseClient';
 
 export interface ChatReply {
   reply: string;
   isDemo: boolean;
+  actions?: BrowserAction[];
+}
+/** Sends the conversation (last item = new user message). */
+export async function sendMessage(
+  messages: Message[],
+  opts: { demo: boolean; browser?: boolean },
+): Promise<ChatReply> {
+  if (opts.demo) {
+    await wait(700 + Math.random() * 700);
+    const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+    return { reply: demoReply(lastUser?.content ?? ''), isDemo: true };
+  }
+  const data = await callFunctionJson<{ reply?: string; actions?: BrowserAction[] }>('nish-chat', {
+    messages: messages
+      .filter((m) => !m.isError)
+      .map((m) => ({ role: m.role, content: m.content })),
+    browser: Boolean(opts.browser),
+  });
+  if (typeof data.reply !== 'string' || !data.reply.trim()) {
+    throw new BackendError('INVALID_RESPONSE', 'The backend returned an empty reply.');
+  }
+  return {
+    reply: data.reply,
+    isDemo: false,
+    actions: Array.isArray(data.actions) ? data.actions : [],
+  };
 }
 
 export interface BackendHealth {

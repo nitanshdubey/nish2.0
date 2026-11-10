@@ -6,7 +6,7 @@ import { Banner, Chip, PageHeader, Panel } from '../components/ui/Primitives';
 import type { IntegrationStatus } from '../types';
 
 export default function Integrations() {
-  const { backendVerify, health, healthError, checkBackend } = useNish();
+  const { backendVerify, health, healthError, checkBackend, chromeStatus, chromeVersion, checkChrome } = useNish();
 
   const supabase: { status: IntegrationStatus; detail?: string } =
     backendVerify === 'online'
@@ -59,7 +59,18 @@ export default function Integrations() {
         <IntegrationCard icon={Globe} name="Google services" description="Google account access for connected tools." status="coming-soon" />
         <IntegrationCard icon={Mail} name="Gmail" description="Read, draft and send email." status="coming-soon" />
         <IntegrationCard icon={CalendarDays} name="Google Calendar" description="View and create calendar events." status="coming-soon" />
-        <IntegrationCard icon={AppWindow} name="Chrome" description="Browser tab management through a future Chrome extension." status="coming-soon" />
+        <IntegrationCard
+          icon={AppWindow}
+          name="Chrome"
+          description="Search the web, open sites and switch tabs through the NISH Chrome extension."
+          status={chromeStatus === 'connected' ? 'connected' : 'not-connected'}
+          detail={
+            chromeStatus === 'connected'
+              ? `Extension v${chromeVersion ?? '?'} detected.`
+              : 'Extension not detected. Install it in Chrome, then refresh this page.'
+          }
+          action={{ label: 'Check again', onClick: () => void checkChrome(), busy: chromeStatus === 'checking' }}
+        />
         <IntegrationCard
           icon={Monitor}
           name="Windows desktop connector"

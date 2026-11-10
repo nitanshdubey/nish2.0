@@ -3,12 +3,18 @@ import { StatusDot } from '../ui/StatusIndicator';
 import type { StatusInfo } from '../../types';
 
 export default function StatusPanel() {
-  const { statuses } = useNish();
+  const { statuses, chromeStatus } = useNish();
+  const chromeInfo: StatusInfo =
+    chromeStatus === 'connected'
+      ? { label: 'CONNECTED', tone: 'ok' }
+      : chromeStatus === 'checking'
+        ? { label: 'CHECKING', tone: 'busy' }
+        : { label: 'NOT DETECTED', tone: 'idle' };
   const items: { label: string; info: StatusInfo }[] = [
     { label: 'SYSTEM', info: statuses.system },
     { label: 'AI SERVICE', info: statuses.ai },
     { label: 'MICROPHONE', info: statuses.mic },
-    { label: 'LOCAL CONNECTOR', info: { label: 'NOT INSTALLED', tone: 'idle' } },
+    { label: 'CHROME', info: chromeInfo },
   ];
   return (
     <dl className="relative z-10 grid w-full grid-cols-2 gap-2 sm:grid-cols-4">

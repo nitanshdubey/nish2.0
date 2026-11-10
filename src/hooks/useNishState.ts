@@ -4,6 +4,8 @@ import { checkBackendHealth, sendMessage, type BackendHealth } from '../services
 import { generateVoiceResponse, transcribeAudio } from '../services/voiceService';
 import { BackendError, isBackendConfigured } from '../services/supabaseClient';
 import { formatBytes, formatDuration, uid } from '../lib/format';
+import { pingExtension, runBrowserAction } from '../services/chromeBridge';
+import type { ConnectorStatus } from '../types';
 import type {
   BackendStatus,
   Conversation,
@@ -38,6 +40,25 @@ export function useNishState(settings: Settings) {
   settingsRef.current = settings;
 
   const recorder = useVoiceRecorder();
+
+  /* ---------------- Chrome connector ---------------- */
+  const [chromeLink, setChromeLink] = useState<{ status: ConnectorStatus; version?: string }>({
+    status: 'checking',
+  });
+  const chromeLinkRef = useRef(chromeLink);
+  chromeLinkRef.current = chromeLink;
+
+  const checkChrome = useCallback(async () => {
+    const r = await pingExtension();
+    setChromeLink({ status: r.connected ? 'connected' : 'not-detected', version: r.version });
+  }, []);
+
+  useEffect(() => {
+    void checkChrome();
+    const onFocus = () => void checkChrome();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [checkChrome]);
 
   /* ---------------- Conversations (session-only) ---------------- */
   const [conversations, setConvState] = useState<Conversation[]>(() => [createConversation()]);
@@ -179,7 +200,10 @@ export function useNishState(settings: Settings) {
       processingRef.current = true;
       setPhase('processing');
       try {
-        const res = await sendMessage(conv.messages, { demo: settingsRef.current.demoMode });
+                const res = await sendMessage(conv.messages, {
+          demo: settingsRef.current.demoMode,
+          browser: chromeLinkRef.current.status === 'connected',
+        });
         releaseAudio();
         appendMessage(convId, {
           id: uid(),
@@ -196,6 +220,20 @@ export function useNishState(settings: Settings) {
         );
         const s = settingsRef.current;
         if (!res.isDemo && s.voiceEnabled && s.autoPlay) void playText(res.reply);
+        if (res.actions && res.actions.length > 0) {
+          for (const action of res.actions.slice(0, 3)) {
+            const out = await runBrowserAction(action);
+            if (!out.ok) {
+              appendMessage(convId, {
+                id: uid(),
+                role: 'assistant',
+                content: `Chrome action failed: ${out.error ?? 'unknown error'}`,
+                timestamp: Date.now(),
+                isError: true,
+              });
+            }
+          }
+        }
       } catch (err) {
         appendMessage(convId, {
           id: uid(),
@@ -447,6 +485,10 @@ export function useNishState(settings: Settings) {
     removeMemory,
     clearMemory,
     clearSession,
+        // chrome connector
+        chromeStatus: chromeLink.status,
+        chromeVersion: chromeLink.version,
+        checkChrome,
     // backend
     backendStatus,
     backendVerify: verify,
