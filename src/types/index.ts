@@ -42,7 +42,7 @@ export interface Settings {
   voiceEnabled: boolean;
   preferredVoice: VoicePreference;
   speechSpeed: number;
-  autoPlay: boolean;
+  speakReplies: boolean;
   interactionMode: InteractionMode;
   pushToTalk: boolean;
   activationShortcut: ActivationShortcut;

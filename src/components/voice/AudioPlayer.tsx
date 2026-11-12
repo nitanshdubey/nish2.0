@@ -2,10 +2,10 @@ import { Loader2, Pause, Play, Volume2 } from 'lucide-react';
 import type { PlaybackStatus } from '../../types';
 
 const LABEL: Record<PlaybackStatus, string> = {
-  idle: 'NO AUDIO LOADED',
-  loading: 'GENERATING VOICE…',
-  ready: 'PLAYBACK COMPLETE',
-  playing: 'PLAYING',
+  idle: 'READY TO SPEAK',
+  loading: 'STARTING VOICE…',
+  ready: 'FINISHED SPEAKING',
+  playing: 'SPEAKING',
   paused: 'PAUSED',
   error: 'VOICE ERROR',
 };

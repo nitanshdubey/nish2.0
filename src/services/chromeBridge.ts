@@ -8,7 +8,12 @@ export interface BridgeResult {
   message?: string;
   error?: string;
   version?: string;
+  shortcut?: string;
 }
+
+export type ExtensionEvent =
+  | { event: 'hotkey' }
+  | { event: 'tts'; state: 'start' | 'end' | 'stopped' | 'error'; message?: string };
 
 let counter = 0;
 
@@ -34,6 +39,9 @@ function request(payload: Record<string, unknown>, timeoutMs: number): Promise<B
   });
 }
 
+const NOT_RESPONDING =
+  'The NISH Chrome connector did not respond. Check that the extension is installed, enabled and up to date, then refresh this page.';
+
 /** Is the NISH Chrome extension installed and allowed on this page? */
 export async function pingExtension(): Promise<{ connected: boolean; version?: string }> {
   try {
@@ -48,10 +56,31 @@ export async function runBrowserAction(action: BrowserAction): Promise<BridgeRes
   try {
     return await request({ ...action }, 8000);
   } catch {
-    return {
-      ok: false,
-      error:
-        'The NISH Chrome connector did not respond. Check that the extension is installed and enabled, then refresh this page.',
-    };
+    return { ok: false, error: NOT_RESPONDING };
   }
+}
+
+/** Any other command for the extension (speech, shortcut info, ...). */
+export async function callExtension(payload: Record<string, unknown>, timeoutMs = 4000): Promise<BridgeResult> {
+  try {
+    return await request(payload, timeoutMs);
+  } catch {
+    return { ok: false, error: NOT_RESPONDING };
+  }
+}
+
+/** Events pushed by the extension: the keyboard shortcut and speech progress. */
+export function onExtensionEvent(handler: (e: ExtensionEvent) => void): () => void {
+  const listener = (e: MessageEvent) => {
+    if (e.source !== window || e.origin !== window.location.origin) return;
+    const d = e.data as { source?: string; event?: string; state?: string; message?: string } | null;
+    if (!d || d.source !== RESPONSE || typeof d.event !== 'string') return;
+    if (d.event === 'hotkey') {
+      handler({ event: 'hotkey' });
+    } else if (d.event === 'tts' && typeof d.state === 'string') {
+      handler({ event: 'tts', state: d.state as 'start' | 'end' | 'stopped' | 'error', message: d.message });
+    }
+  };
+  window.addEventListener('message', listener);
+  return () => window.removeEventListener('message', listener);
 }

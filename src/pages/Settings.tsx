@@ -1,3 +1,4 @@
+import { callExtension } from '../services/chromeBridge';
 import { Eraser, Info, Keyboard, Mic, RefreshCw, RotateCcw, Settings as SettingsIcon, Trash2 } from 'lucide-react';
 import { useNish } from '../context/NishContext';
 import { useSettings } from '../context/SettingsContext';
@@ -114,13 +115,14 @@ export default function SettingsPage() {
             />
           </div>
           <Toggle
-            label="Auto-play responses"
-            description="Play spoken replies automatically (backend mode only)."
-            checked={settings.autoPlay}
-            onChange={(v) => update('autoPlay', v)}
+            label="Speak replies aloud"
+            description="NISH reads each answer out loud. The text still appears in the chat."
+            checked={settings.speakReplies}
+            onChange={(v) => update('speakReplies', v)}
           />
           <p className="mt-1 text-xs leading-relaxed text-mute">
-            Voice choices are saved for the future text-to-speech backend. No speech audio is generated in demo mode.
+            Uses the voices installed on your computer, at no cost. With the Chrome connector it also works while NISH
+            is in the background. Male and female are matched by voice name, so the result depends on the voices your PC has.
           </p>
         </Panel>
 
@@ -140,21 +142,31 @@ export default function SettingsPage() {
             checked={settings.pushToTalk}
             onChange={(v) => update('pushToTalk', v)}
           />
-          <Segmented
-            label="Activation shortcut"
-            value={settings.activationShortcut}
-            onChange={(v) => update('activationShortcut', v)}
-            options={[
-              { value: 'Ctrl + Space', label: 'Ctrl + Space' },
-              { value: 'Ctrl + Alt + N', label: 'Ctrl + Alt + N' },
-              { value: 'Alt + Space', label: 'Alt + Space' },
-            ]}
-          />
-          <div className="mt-1 flex flex-wrap items-center gap-2">
-            <Chip tone="idle">LOCAL CONNECTOR NOT INSTALLED</Chip>
-            <span className="text-xs text-mute">
-              A web page cannot register a system-wide shortcut. This setting is saved for the future connector.
-            </span>
+                    <div className="py-2.5">
+            <p className="mb-2 text-sm">Activation shortcut</p>
+            <div className="flex flex-wrap items-center gap-2">
+              {nish.chromeStatus === 'connected' ? (
+                nish.chromeShortcut ? (
+                  <Chip tone="ok">{nish.chromeShortcut.toUpperCase()}</Chip>
+                ) : (
+                  <Chip tone="warn">NO SHORTCUT SET</Chip>
+                )
+              ) : (
+                <Chip tone="idle">CHROME CONNECTOR NOT DETECTED</Chip>
+              )}
+              <button
+                type="button"
+                className={btnGhost}
+                disabled={nish.chromeStatus !== 'connected'}
+                onClick={() => void callExtension({ type: 'open_shortcut_settings' })}
+              >
+                Change in Chrome
+              </button>
+            </div>
+            <p className="mt-2 text-xs leading-relaxed text-mute">
+              Chrome owns this shortcut, not the web page. On Chrome’s shortcut page, set the scope of “Open NISH and
+              start listening” to Global so it also works while another app is in front. Chrome must be running.
+            </p>
           </div>
         </Panel>
 

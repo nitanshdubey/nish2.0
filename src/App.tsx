@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { PageId } from './types';
 import { useNish } from './context/NishContext';
 import MainLayout from './components/layout/MainLayout';
@@ -12,7 +12,10 @@ import SettingsPage from './pages/Settings';
 
 export default function App() {
   const [page, setPage] = useState<PageId>('home');
-  const { newConversation } = useNish();
+  const { newConversation, hotkeyPulse } = useNish();
+  useEffect(() => {
+    if (hotkeyPulse > 0) setPage('home');
+  }, [hotkeyPulse]);
 
   const renderPage = () => {
     switch (page) {

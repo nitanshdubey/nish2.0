@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVoiceRecorder } from './useVoiceRecorder';
 import { checkBackendHealth, sendMessage, type BackendHealth } from '../services/aiService';
-import { generateVoiceResponse, transcribeAudio } from '../services/voiceService';
+import { transcribeAudio } from '../services/voiceService';
 import { BackendError, isBackendConfigured } from '../services/supabaseClient';
+import { callExtension, onExtensionEvent, pingExtension, runBrowserAction } from '../services/chromeBridge';
+import * as speech from '../services/speechService';
 import { formatBytes, formatDuration, uid } from '../lib/format';
-import { pingExtension, runBrowserAction } from '../services/chromeBridge';
-import type { ConnectorStatus } from '../types';
 import type {
   BackendStatus,
+  ConnectorStatus,
   Conversation,
   MemoryItem,
   Message,
@@ -19,6 +20,15 @@ import type {
 
 type Phase = 'idle' | 'processing' | 'responding';
 type Verify = 'unverified' | 'checking' | 'online' | 'offline';
+
+// Hands-free recording (keyboard shortcut) tuning
+const VAD_THRESHOLD = 0.1; // microphone level that counts as speech (0..1)
+const VAD_SILENCE_MS = 1600; // stop this long after you stop talking
+const VAD_NO_SPEECH_MS = 7000; // give up if nothing is said
+const VAD_MAX_MS = 45000; // hard limit
+
+// True when the page was opened by the global shortcut (the extension adds #listen).
+const OPENED_BY_HOTKEY = typeof window !== 'undefined' && window.location.hash === '#listen';
 
 const createConversation = (): Conversation => {
   const now = Date.now();
@@ -41,8 +51,23 @@ export function useNishState(settings: Settings) {
 
   const recorder = useVoiceRecorder();
 
+  /* ---------------- Internet connection ---------------- */
+  const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
+  const onlineRef = useRef(online);
+  onlineRef.current = online;
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => {
+      window.removeEventListener('online', on);
+      window.removeEventListener('offline', off);
+    };
+  }, []);
+
   /* ---------------- Chrome connector ---------------- */
-  const [chromeLink, setChromeLink] = useState<{ status: ConnectorStatus; version?: string }>({
+  const [chromeLink, setChromeLink] = useState<{ status: ConnectorStatus; version?: string; shortcut?: string }>({
     status: 'checking',
   });
   const chromeLinkRef = useRef(chromeLink);
@@ -50,7 +75,12 @@ export function useNishState(settings: Settings) {
 
   const checkChrome = useCallback(async () => {
     const r = await pingExtension();
-    setChromeLink({ status: r.connected ? 'connected' : 'not-detected', version: r.version });
+    if (!r.connected) {
+      setChromeLink({ status: 'not-detected' });
+      return;
+    }
+    const s = await callExtension({ type: 'get_shortcut' }, 2000);
+    setChromeLink({ status: 'connected', version: r.version, shortcut: s.ok ? (s.shortcut ?? '') : undefined });
   }, []);
 
   useEffect(() => {
@@ -108,85 +138,106 @@ export function useNishState(settings: Settings) {
     [mutate],
   );
 
-  /* ---------------- Voice playback ---------------- */
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioUrlRef = useRef<string | null>(null);
+  const addNotice = useCallback(
+    (content: string) => {
+      appendMessage(activeRef.current, {
+        id: uid(),
+        role: 'assistant',
+        content,
+        timestamp: Date.now(),
+        isError: true,
+      });
+    },
+    [appendMessage],
+  );
+
+  /* ---------------- Spoken replies ---------------- */
   const [playback, setPlayback] = useState<{ status: PlaybackStatus; error: string | null }>({
     status: 'idle',
     error: null,
   });
+  const playbackRef = useRef(playback);
+  playbackRef.current = playback;
+  const speakTimer = useRef<number | undefined>(undefined);
 
-  const releaseAudio = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.onplay = null;
-      audioRef.current.onpause = null;
-      audioRef.current.onended = null;
-      audioRef.current.onerror = null;
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(audioUrlRef.current);
-      audioUrlRef.current = null;
-    }
+  const stopSpeech = useCallback(() => {
+    window.clearTimeout(speakTimer.current);
+    speech.stopBrowserSpeech();
+    if (chromeLinkRef.current.status === 'connected') void callExtension({ type: 'stop_speaking' }, 1500);
     setPlayback({ status: 'idle', error: null });
   }, []);
 
-  const playBlob = useCallback(
-    async (blob: Blob) => {
-      releaseAudio();
-      const url = URL.createObjectURL(blob);
-      audioUrlRef.current = url;
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onplay = () => setPlayback({ status: 'playing', error: null });
-      audio.onpause = () => {
-        if (!audio.ended) setPlayback({ status: 'paused', error: null });
-      };
-      audio.onended = () => setPlayback({ status: 'ready', error: null });
-      audio.onerror = () => setPlayback({ status: 'error', error: 'The audio could not be played.' });
-      try {
-        await audio.play();
-      } catch {
-        setPlayback({ status: 'error', error: 'Playback was blocked by the browser. Press play to retry.' });
-      }
-    },
-    [releaseAudio],
-  );
+  const speakText = useCallback(async (text: string) => {
+    const s = settingsRef.current;
+    const clean = text.trim();
+    if (!clean) return;
+    window.clearTimeout(speakTimer.current);
+    setPlayback({ status: 'loading', error: null });
 
-  const playText = useCallback(
-    async (text: string) => {
-      const s = settingsRef.current;
-      setPlayback({ status: 'loading', error: null });
-      try {
-        const blob = await generateVoiceResponse(text, {
-          voice: s.preferredVoice,
-          speed: s.speechSpeed,
-          demo: s.demoMode,
-        });
-        await playBlob(blob);
-      } catch (err) {
-        setPlayback({ status: 'error', error: errorText(err) });
+    // Safety net: some voices send no "finished" event, so reset the player after an estimated duration.
+    const armTimer = () => {
+      window.clearTimeout(speakTimer.current);
+      speakTimer.current = window.setTimeout(
+        () => setPlayback((p) => (p.status === 'playing' ? { status: 'ready', error: null } : p)),
+        Math.min(180000, 8000 + clean.length * 90),
+      );
+    };
+
+    if (chromeLinkRef.current.status === 'connected') {
+      speech.stopBrowserSpeech();
+      const r = await callExtension(
+        { type: 'speak', text: clean, voice: s.preferredVoice, rate: s.speechSpeed },
+        4000,
+      );
+      if (!r.ok) {
+        setPlayback({ status: 'error', error: r.error ?? 'Could not start speech.' });
+        return;
       }
-    },
-    [playBlob],
-  );
+      setPlayback({ status: 'playing', error: null });
+      armTimer();
+      return;
+    }
+
+    speech.speakInBrowser(
+      clean,
+      { voice: s.preferredVoice, rate: s.speechSpeed },
+      {
+        onStart: () => {
+          setPlayback({ status: 'playing', error: null });
+          armTimer();
+        },
+        onEnd: () => {
+          window.clearTimeout(speakTimer.current);
+          setPlayback({ status: 'ready', error: null });
+        },
+        onError: (message) => {
+          window.clearTimeout(speakTimer.current);
+          setPlayback({ status: 'error', error: message });
+        },
+      },
+    );
+  }, []);
 
   const togglePlayback = useCallback(() => {
-    const a = audioRef.current;
-    if (a) {
-      if (a.paused) {
-        if (a.ended) a.currentTime = 0;
-        a.play().catch(() => setPlayback({ status: 'error', error: 'Playback was blocked by the browser.' }));
-      } else {
-        a.pause();
-      }
+    const st = playbackRef.current.status;
+    if (st === 'loading') return;
+    const viaExtension = chromeLinkRef.current.status === 'connected';
+    if (st === 'playing') {
+      if (viaExtension) void callExtension({ type: 'pause_speaking' }, 1500);
+      else speech.pauseBrowserSpeech();
+      setPlayback({ status: 'paused', error: null });
+      return;
+    }
+    if (st === 'paused') {
+      if (viaExtension) void callExtension({ type: 'resume_speaking' }, 1500);
+      else speech.resumeBrowserSpeech();
+      setPlayback({ status: 'playing', error: null });
       return;
     }
     const conv = convRef.current.find((c) => c.id === activeRef.current);
     const last = [...(conv?.messages ?? [])].reverse().find((m) => m.role === 'assistant' && !m.isError);
-    if (last) void playText(last.content);
-  }, [playText]);
+    if (last) void speakText(last.content);
+  }, [speakText]);
 
   /* ---------------- Assistant processing ---------------- */
   const [phase, setPhase] = useState<Phase>('idle');
@@ -200,11 +251,11 @@ export function useNishState(settings: Settings) {
       processingRef.current = true;
       setPhase('processing');
       try {
-                const res = await sendMessage(conv.messages, {
+        const res = await sendMessage(conv.messages, {
           demo: settingsRef.current.demoMode,
           browser: chromeLinkRef.current.status === 'connected',
         });
-        releaseAudio();
+        stopSpeech();
         appendMessage(convId, {
           id: uid(),
           role: 'assistant',
@@ -218,8 +269,10 @@ export function useNishState(settings: Settings) {
           () => setPhase('idle'),
           Math.min(4500, 1200 + res.reply.length * 18),
         );
+
         const s = settingsRef.current;
-        if (!res.isDemo && s.voiceEnabled && s.autoPlay) void playText(res.reply);
+        if (s.voiceEnabled && s.speakReplies) void speakText(res.reply);
+
         if (res.actions && res.actions.length > 0) {
           for (const action of res.actions.slice(0, 3)) {
             const out = await runBrowserAction(action);
@@ -247,7 +300,7 @@ export function useNishState(settings: Settings) {
         processingRef.current = false;
       }
     },
-    [appendMessage, releaseAudio, playText],
+    [appendMessage, stopSpeech, speakText],
   );
 
   const sendText = useCallback(
@@ -261,15 +314,64 @@ export function useNishState(settings: Settings) {
     [appendMessage, runAssistant, recorder.isRecording],
   );
 
-  /* ---------------- Recording flow ---------------- */
-  const startRecording = useCallback(async (): Promise<boolean> => {
-    const s = settingsRef.current;
-    if (!s.voiceEnabled || s.interactionMode === 'text-only' || processingRef.current) return false;
-    releaseAudio();
-    return recorder.start();
-  }, [recorder.start, releaseAudio]);
+  /* ---------------- Recording flow (tap, push-to-talk and hotkey) ---------------- */
+  const vadRef = useRef<number | undefined>(undefined);
+  const stopVad = useCallback(() => {
+    window.clearInterval(vadRef.current);
+    vadRef.current = undefined;
+  }, []);
+  const stopRecordingRef = useRef<() => Promise<void>>(async () => {});
+
+  // Watches the microphone level and stops by itself when you finish talking.
+  const startVad = useCallback(() => {
+    stopVad();
+    const began = Date.now();
+    let heard = false;
+    let lastVoice = began;
+    vadRef.current = window.setInterval(() => {
+      if (!recorder.isRecording()) {
+        stopVad();
+        return;
+      }
+      const now = Date.now();
+      if (recorder.getLevel() > VAD_THRESHOLD) {
+        heard = true;
+        lastVoice = now;
+      }
+      if (heard && now - lastVoice > VAD_SILENCE_MS) {
+        stopVad();
+        void stopRecordingRef.current();
+      } else if (!heard && now - began > VAD_NO_SPEECH_MS) {
+        stopVad();
+        recorder.cancel();
+        addNotice('I did not hear anything, so I stopped listening. Press the shortcut again when you are ready.');
+      } else if (now - began > VAD_MAX_MS) {
+        stopVad();
+        void stopRecordingRef.current();
+      }
+    }, 100);
+  }, [recorder.isRecording, recorder.getLevel, recorder.cancel, stopVad, addNotice]);
+
+  const startRecording = useCallback(
+    async (auto = false): Promise<boolean> => {
+      const s = settingsRef.current;
+      if (!s.voiceEnabled || s.interactionMode === 'text-only' || processingRef.current) return false;
+      if (!onlineRef.current) {
+        addNotice(
+          'You appear to be offline. NISH needs an internet connection for voice and AI answers. Check your Wi-Fi and try again.',
+        );
+        return false;
+      }
+      stopSpeech(); // talking over NISH interrupts it
+      const ok = await recorder.start();
+      if (ok && auto) startVad();
+      return ok;
+    },
+    [recorder.start, stopSpeech, startVad, addNotice],
+  );
 
   const stopRecording = useCallback(async () => {
+    stopVad();
     const result = await recorder.stop();
     if (!result) return;
     const convId = activeRef.current;
@@ -299,18 +401,19 @@ export function useNishState(settings: Settings) {
       appendMessage(convId, { id: uid(), role: 'assistant', content, timestamp: Date.now(), isError: true });
       setPhase('idle');
     }
-  }, [recorder.stop, appendMessage, updateMessage, runAssistant]);
+  }, [recorder.stop, stopVad, appendMessage, updateMessage, runAssistant]);
+  stopRecordingRef.current = stopRecording;
 
   const toggleRecording = useCallback(async () => {
     if (recorder.isRecording()) await stopRecording();
-    else await startRecording();
+    else await startRecording(false);
   }, [recorder.isRecording, startRecording, stopRecording]);
 
   // Push-to-talk: hold to record, release to send.
   const holdRef = useRef(false);
   const pushStart = useCallback(async () => {
     holdRef.current = true;
-    const ok = await startRecording();
+    const ok = await startRecording(false);
     if (ok && !holdRef.current) await stopRecording(); // released during permission prompt
   }, [startRecording, stopRecording]);
   const pushEnd = useCallback(async () => {
@@ -318,22 +421,35 @@ export function useNishState(settings: Settings) {
     if (recorder.isRecording()) await stopRecording();
   }, [recorder.isRecording, stopRecording]);
 
+  // Global keyboard shortcut (sent by the Chrome extension): start listening, or send if already recording.
+  const [hotkeyPulse, setHotkeyPulse] = useState(0);
+  const handleHotkey = useCallback(async () => {
+    setHotkeyPulse((n) => n + 1);
+    if (recorder.isRecording()) {
+      await stopRecordingRef.current();
+      return;
+    }
+    await startRecording(true);
+  }, [recorder.isRecording, startRecording]);
+  const handleHotkeyRef = useRef(handleHotkey);
+  handleHotkeyRef.current = handleHotkey;
+
   /* ---------------- Conversation management ---------------- */
   const newConversation = useCallback(() => {
-    releaseAudio();
+    stopSpeech();
     const active = convRef.current.find((c) => c.id === activeRef.current);
     if (active && active.messages.length === 0) return;
     const c = createConversation();
     mutate((l) => [c, ...l]);
     setActive(c.id);
-  }, [mutate, setActive, releaseAudio]);
+  }, [mutate, setActive, stopSpeech]);
 
   const selectConversation = useCallback(
     (id: string) => {
-      releaseAudio();
+      stopSpeech();
       setActive(id);
     },
-    [setActive, releaseAudio],
+    [setActive, stopSpeech],
   );
 
   const deleteConversation = useCallback(
@@ -343,20 +459,20 @@ export function useNishState(settings: Settings) {
       convRef.current = next;
       setConvState(next);
       if (activeRef.current === id) {
-        releaseAudio();
+        stopSpeech();
         setActive(next[0].id);
       }
     },
-    [releaseAudio, setActive],
+    [stopSpeech, setActive],
   );
 
   const clearConversations = useCallback(() => {
-    releaseAudio();
+    stopSpeech();
     const c = createConversation();
     convRef.current = [c];
     setConvState([c]);
     setActive(c.id);
-  }, [releaseAudio, setActive]);
+  }, [stopSpeech, setActive]);
 
   /* ---------------- Memory (session-only) ---------------- */
   const [memory, setMemory] = useState<MemoryItem[]>([]);
@@ -402,6 +518,45 @@ export function useNishState(settings: Settings) {
       ? 'not-configured'
       : verify;
 
+  /* ---------------- Events from the Chrome extension ---------------- */
+  useEffect(() => {
+    return onExtensionEvent((e) => {
+      if (e.event === 'hotkey') {
+        void handleHotkeyRef.current();
+        return;
+      }
+      switch (e.state) {
+        case 'start':
+          setPlayback({ status: 'playing', error: null });
+          break;
+        case 'end':
+          window.clearTimeout(speakTimer.current);
+          setPlayback({ status: 'ready', error: null });
+          break;
+        case 'stopped':
+          setPlayback((p) => (p.status === 'playing' || p.status === 'paused' ? { status: 'ready', error: null } : p));
+          break;
+        case 'error':
+          window.clearTimeout(speakTimer.current);
+          setPlayback({ status: 'error', error: e.message ?? 'Speech failed.' });
+          break;
+      }
+    });
+  }, []);
+
+  // Page opened by the shortcut: start listening once it has loaded.
+  const listenHandled = useRef(false);
+  useEffect(() => {
+    if (!OPENED_BY_HOTKEY) return;
+    const t = window.setTimeout(() => {
+      if (listenHandled.current) return;
+      listenHandled.current = true;
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      void handleHotkeyRef.current();
+    }, 600);
+    return () => window.clearTimeout(t);
+  }, []);
+
   /* ---------------- Derived state ---------------- */
   const nishState: NishState =
     recorder.status === 'recording'
@@ -413,8 +568,9 @@ export function useNishState(settings: Settings) {
           : 'standby';
 
   const statuses = useMemo(() => {
-    const system: StatusInfo =
-      backendStatus === 'online'
+    const system: StatusInfo = !online
+      ? { label: 'NO INTERNET', tone: 'bad' }
+      : backendStatus === 'online'
         ? { label: 'ONLINE', tone: 'ok' }
         : backendStatus === 'checking'
           ? { label: 'CONNECTING', tone: 'busy' }
@@ -440,6 +596,7 @@ export function useNishState(settings: Settings) {
 
     return { system, ai: aiMap[backendStatus], mic };
   }, [
+    online,
     backendStatus,
     recorder.status,
     recorder.permission,
@@ -453,9 +610,11 @@ export function useNishState(settings: Settings) {
   useEffect(
     () => () => {
       window.clearTimeout(respondTimer.current);
-      releaseAudio();
+      window.clearTimeout(speakTimer.current);
+      window.clearInterval(vadRef.current);
+      speech.stopBrowserSpeech();
     },
-    [releaseAudio],
+    [],
   );
 
   return {
@@ -472,6 +631,7 @@ export function useNishState(settings: Settings) {
     phase,
     nishState,
     statuses,
+    online,
     // voice
     recorder,
     toggleRecording,
@@ -479,16 +639,19 @@ export function useNishState(settings: Settings) {
     pushEnd,
     playback,
     togglePlayback,
+    stopSpeech,
+    hotkeyPulse,
     // memory
     memory,
     addMemory,
     removeMemory,
     clearMemory,
     clearSession,
-        // chrome connector
-        chromeStatus: chromeLink.status,
-        chromeVersion: chromeLink.version,
-        checkChrome,
+    // chrome connector
+    chromeStatus: chromeLink.status,
+    chromeVersion: chromeLink.version,
+    chromeShortcut: chromeLink.shortcut,
+    checkChrome,
     // backend
     backendStatus,
     backendVerify: verify,

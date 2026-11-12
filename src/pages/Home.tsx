@@ -31,12 +31,10 @@ export default function Home() {
 
   const hasReply = nish.activeConversation.messages.some((m) => m.role === 'assistant' && !m.isError);
   const audioReason = !settings.voiceEnabled
-    ? 'Voice responses are disabled in Settings.'
-    : settings.demoMode
-      ? 'Demo mode: no speech audio is generated.'
-      : !hasReply
-        ? 'Waiting for a response to read aloud.'
-        : undefined;
+  ? 'Voice responses are disabled in Settings.'
+  : !hasReply
+    ? 'Waiting for a response to read aloud.'
+    : undefined;
 
   return (
     <div className="grid flex-1 gap-4 p-3 sm:p-4 lg:min-h-0 lg:grid-cols-[minmax(0,1fr)_minmax(360px,440px)] lg:grid-rows-[minmax(0,1fr)]">

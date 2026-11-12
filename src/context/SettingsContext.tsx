@@ -8,7 +8,7 @@ export const DEFAULT_SETTINGS: Settings = {
   voiceEnabled: true,
   preferredVoice: 'male',
   speechSpeed: 1,
-  autoPlay: false,
+  speakReplies: true,
   interactionMode: 'voice-text',
   pushToTalk: false,
   activationShortcut: 'Ctrl + Space',
