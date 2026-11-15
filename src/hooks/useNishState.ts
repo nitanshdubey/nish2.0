@@ -6,6 +6,7 @@ import { BackendError, isBackendConfigured } from '../services/supabaseClient';
 import { callExtension, onExtensionEvent, pingExtension, runBrowserAction } from '../services/chromeBridge';
 import * as speech from '../services/speechService';
 import { formatBytes, formatDuration, uid } from '../lib/format';
+import * as cloud from '../services/historyService';
 import type {
   BackendStatus,
   ConnectorStatus,
@@ -45,9 +46,11 @@ const errorText = (err: unknown): string => {
   return 'Something went wrong. Please try again.';
 };
 
-export function useNishState(settings: Settings) {
+export function useNishState(settings: Settings, userId: string | null = null) {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
 
   const recorder = useVoiceRecorder();
 
@@ -90,66 +93,150 @@ export function useNishState(settings: Settings) {
     return () => window.removeEventListener('focus', onFocus);
   }, [checkChrome]);
 
-  /* ---------------- Conversations (session-only) ---------------- */
-  const [conversations, setConvState] = useState<Conversation[]>(() => [createConversation()]);
-  const convRef = useRef(conversations);
-  const [activeId, setActiveIdState] = useState<string>(() => conversations[0].id);
-  const activeRef = useRef(activeId);
-
-  const mutate = useCallback((fn: (c: Conversation[]) => Conversation[]) => {
-    convRef.current = fn(convRef.current);
-    setConvState(convRef.current);
-  }, []);
-
-  const setActive = useCallback((id: string) => {
-    activeRef.current = id;
-    setActiveIdState(id);
-  }, []);
-
-  const appendMessage = useCallback(
-    (convId: string, msg: Message) => {
-      mutate((list) =>
-        list.map((c) => {
-          if (c.id !== convId) return c;
-          const firstUser = msg.role === 'user' && !c.messages.some((m) => m.role === 'user');
-          return {
-            ...c,
-            title: firstUser ? makeTitle(msg.content) : c.title,
-            updatedAt: msg.timestamp,
-            messages: [...c.messages, msg],
-          };
-        }),
-      );
-    },
-    [mutate],
-  );
-
-  const updateMessage = useCallback(
-    (convId: string, msgId: string, patch: Partial<Message>) => {
-      mutate((list) =>
-        list.map((c) => {
-          if (c.id !== convId) return c;
-          const title =
-            patch.content && c.title.startsWith('Voice message') ? makeTitle(patch.content) : c.title;
-          return { ...c, title, messages: c.messages.map((m) => (m.id === msgId ? { ...m, ...patch } : m)) };
-        }),
-      );
-    },
-    [mutate],
-  );
-
-  const addNotice = useCallback(
-    (content: string) => {
-      appendMessage(activeRef.current, {
-        id: uid(),
-        role: 'assistant',
-        content,
-        timestamp: Date.now(),
-        isError: true,
+    /* ---------------- Conversations (saved to your account when signed in) ---------------- */
+    const [conversations, setConvState] = useState<Conversation[]>(() => [createConversation()]);
+    const convRef = useRef(conversations);
+    const [activeId, setActiveIdState] = useState<string>(() => conversations[0].id);
+    const activeRef = useRef(activeId);
+  
+    const mutate = useCallback((fn: (c: Conversation[]) => Conversation[]) => {
+      convRef.current = fn(convRef.current);
+      setConvState(convRef.current);
+    }, []);
+  
+    const setActive = useCallback((id: string) => {
+      activeRef.current = id;
+      setActiveIdState(id);
+    }, []);
+  
+    // Cloud sync status (shown on the History page)
+    const [sync, setSync] = useState<{ status: 'off' | 'synced' | 'error'; error: string | null }>({
+      status: 'off',
+      error: null,
+    });
+    const syncOk = useCallback(() => setSync({ status: 'synced', error: null }), []);
+    const syncFail = useCallback((err: unknown) => {
+      console.warn('NISH sync failed', err);
+      setSync({
+        status: 'error',
+        error: err instanceof Error ? err.message : 'Could not save to your account.',
       });
-    },
-    [appendMessage],
-  );
+    }, []);
+    const cloudOn = useCallback(() => Boolean(userIdRef.current) && !settingsRef.current.demoMode, []);
+  
+    const persistMessage = useCallback(
+      (convId: string, msg: Message) => {
+        if (!cloudOn() || msg.isError) return;
+        const conv = convRef.current.find((c) => c.id === convId);
+        if (!conv) return;
+        void (async () => {
+          try {
+            await cloud.upsertConversation(conv);
+            await cloud.insertMessage(convId, msg);
+            syncOk();
+          } catch (err) {
+            syncFail(err);
+          }
+        })();
+      },
+      [cloudOn, syncOk, syncFail],
+    );
+  
+    const appendMessage = useCallback(
+      (convId: string, msg: Message) => {
+        mutate((list) =>
+          list.map((c) => {
+            if (c.id !== convId) return c;
+            const firstUser = msg.role === 'user' && !c.messages.some((m) => m.role === 'user');
+            return {
+              ...c,
+              title: firstUser ? makeTitle(msg.content) : c.title,
+              updatedAt: msg.timestamp,
+              messages: [...c.messages, msg],
+            };
+          }),
+        );
+        persistMessage(convId, msg);
+      },
+      [mutate, persistMessage],
+    );
+  
+    const updateMessage = useCallback(
+      (convId: string, msgId: string, patch: Partial<Message>) => {
+        mutate((list) =>
+          list.map((c) => {
+            if (c.id !== convId) return c;
+            const title =
+              patch.content && c.title.startsWith('Voice message') ? makeTitle(patch.content) : c.title;
+            return { ...c, title, messages: c.messages.map((m) => (m.id === msgId ? { ...m, ...patch } : m)) };
+          }),
+        );
+        if (patch.content !== undefined && cloudOn()) {
+          const conv = convRef.current.find((c) => c.id === convId);
+          void (async () => {
+            try {
+              if (conv) await cloud.upsertConversation(conv); // keeps the saved title in step
+              await cloud.patchMessage(msgId, patch.content as string);
+              syncOk();
+            } catch (err) {
+              syncFail(err);
+            }
+          })();
+        }
+      },
+      [mutate, cloudOn, syncOk, syncFail],
+    );
+  
+    const addNotice = useCallback(
+      (content: string) => {
+        appendMessage(activeRef.current, {
+          id: uid(),
+          role: 'assistant',
+          content,
+          timestamp: Date.now(),
+          isError: true,
+        });
+      },
+      [appendMessage],
+    );
+  
+    // A different person signed in (or out): never mix their conversations with the previous person's.
+    const prevUser = useRef<string | null>(userId);
+    useEffect(() => {
+      if (prevUser.current && prevUser.current !== userId) {
+        const c = createConversation();
+        convRef.current = [c];
+        setConvState([c]);
+        activeRef.current = c.id;
+        setActiveIdState(c.id);
+      }
+      prevUser.current = userId;
+    }, [userId]);
+  
+    // Load saved conversations once signed in (backend mode).
+    useEffect(() => {
+      if (!userId || settings.demoMode) {
+        setSync({ status: 'off', error: null });
+        return;
+      }
+      let cancelled = false;
+      (async () => {
+        try {
+          const saved = await cloud.fetchConversations();
+          if (cancelled) return;
+          mutate((local) => {
+            const known = new Set(local.map((c) => c.id));
+            return [...local, ...saved.filter((c) => !known.has(c.id) && c.messages.length > 0)];
+          });
+          syncOk();
+        } catch (err) {
+          if (!cancelled) syncFail(err);
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [userId, settings.demoMode, mutate, syncOk, syncFail]);
 
   /* ---------------- Spoken replies ---------------- */
   const [playback, setPlayback] = useState<{ status: PlaybackStatus; error: string | null }>({
@@ -462,8 +549,9 @@ export function useNishState(settings: Settings) {
         stopSpeech();
         setActive(next[0].id);
       }
+      if (cloudOn()) void cloud.removeConversation(id).then(syncOk).catch(syncFail);
     },
-    [stopSpeech, setActive],
+    [stopSpeech, setActive, cloudOn, syncOk, syncFail],
   );
 
   const clearConversations = useCallback(() => {
@@ -472,7 +560,8 @@ export function useNishState(settings: Settings) {
     convRef.current = [c];
     setConvState([c]);
     setActive(c.id);
-  }, [stopSpeech, setActive]);
+    if (cloudOn()) void cloud.removeAllConversations().then(syncOk).catch(syncFail);
+  }, [stopSpeech, setActive, cloudOn, syncOk, syncFail]);
 
   /* ---------------- Memory (session-only) ---------------- */
   const [memory, setMemory] = useState<MemoryItem[]>([]);
@@ -647,6 +736,9 @@ export function useNishState(settings: Settings) {
     removeMemory,
     clearMemory,
     clearSession,
+    // cloud sync
+    syncStatus: sync.status,
+    syncError: sync.error,
     // chrome connector
     chromeStatus: chromeLink.status,
     chromeVersion: chromeLink.version,

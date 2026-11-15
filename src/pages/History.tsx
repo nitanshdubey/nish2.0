@@ -6,7 +6,7 @@ import { formatDateTime } from '../lib/format';
 import { Info } from 'lucide-react';
 
 export default function History({ onOpen }: { onOpen: () => void }) {
-  const { conversations, activeId, selectConversation, deleteConversation, newConversation } = useNish();
+  const { conversations, activeId, selectConversation, deleteConversation, newConversation, syncStatus, syncError } = useNish();
   const [query, setQuery] = useState('');
 
   const items = useMemo(() => {
@@ -40,9 +40,12 @@ export default function History({ onOpen }: { onOpen: () => void }) {
       />
 
       <div className="mb-4">
-        <Banner tone="warn" icon={Info}>
-          Session only: history lives in this tab’s memory and is lost on refresh. Persistent cloud history is not
-          connected yet.
+      <Banner tone={syncStatus === 'synced' ? 'ok' : syncStatus === 'error' ? 'bad' : 'warn'} icon={Info}>
+          {syncStatus === 'synced'
+            ? 'Saved to your NISH account. History is kept across refreshes and devices.'
+            : syncStatus === 'error'
+              ? `Could not sync with your account (${syncError}). Messages are kept only in this tab for now.`
+              : 'Session only: turn on backend mode and sign in to keep history across refreshes.'}
         </Banner>
       </div>
 

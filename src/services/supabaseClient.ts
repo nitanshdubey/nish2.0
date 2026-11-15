@@ -1,12 +1,21 @@
 /**
- * Minimal Supabase Edge Function client (no SDK needed).
- * Only PUBLIC configuration is read here. The anon key is public by design;
- * the OpenAI key must live in Supabase secrets and never in the frontend.
+ * Supabase client + Edge Function caller.
+ * Only PUBLIC configuration is read here. The anon/publishable key is public by design;
+ * the Gemini key lives in Supabase secrets and never in the frontend.
  */
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+
 const url = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim().replace(/\/$/, '');
 const anonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined)?.trim();
 
 export const isBackendConfigured = Boolean(url && anonKey);
+
+export const supabase: SupabaseClient | null =
+  url && anonKey
+    ? createClient(url, anonKey, {
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+      })
+    : null;
 
 export type BackendErrorCode =
   | 'DEMO_MODE'
@@ -31,6 +40,15 @@ interface CallOptions {
   body?: BodyInit | null;
 }
 
+/** The signed-in user's token when there is a session, otherwise the public key. */
+async function accessToken(): Promise<string> {
+  if (supabase) {
+    const { data } = await supabase.auth.getSession();
+    if (data.session?.access_token) return data.session.access_token;
+  }
+  return anonKey ?? '';
+}
+
 export async function callFunction(name: string, opts: CallOptions = {}): Promise<Response> {
   if (!url || !anonKey) {
     throw new BackendError(
@@ -41,7 +59,7 @@ export async function callFunction(name: string, opts: CallOptions = {}): Promis
 
   const headers: Record<string, string> = {
     apikey: anonKey,
-    Authorization: `Bearer ${anonKey}`,
+    Authorization: `Bearer ${await accessToken()}`,
   };
   let body: BodyInit | null = opts.body ?? null;
   if (opts.json !== undefined) {

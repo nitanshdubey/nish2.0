@@ -3,6 +3,7 @@ import { Eraser, Info, Keyboard, Mic, RefreshCw, RotateCcw, Settings as Settings
 import { useNish } from '../context/NishContext';
 import { useSettings } from '../context/SettingsContext';
 import { isBackendConfigured } from '../services/supabaseClient';
+import { useAuth } from '../context/AuthContext';
 import {
   Banner,
   Chip,
@@ -36,6 +37,7 @@ export default function SettingsPage() {
   const { settings, update, reset } = useSettings();
   const nish = useNish();
   const perm = nish.recorder.permission;
+  const { session, signOut } = useAuth();
 
   return (
     <div className="mx-auto w-full max-w-6xl p-4 sm:p-6">
@@ -217,6 +219,16 @@ export default function SettingsPage() {
               </p>
             </div>
             <div className="space-y-3">
+            {session && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-base2/60 px-3 py-2">
+                  <p className="min-w-0 truncate text-xs text-mute">
+                    Signed in as <span className="text-ink">{session.user.email}</span>
+                  </p>
+                  <button type="button" className={btnGhost} onClick={() => void signOut()}>
+                    Sign out
+                  </button>
+                </div>
+              )}
               <Toggle
                 label="Memory enabled"
                 description="Allow saving preferences and facts on the Memory page."
