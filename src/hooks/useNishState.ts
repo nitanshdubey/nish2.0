@@ -7,6 +7,7 @@ import { callExtension, onExtensionEvent, pingExtension, runBrowserAction } from
 import * as speech from '../services/speechService';
 import { formatBytes, formatDuration, uid } from '../lib/format';
 import * as cloud from '../services/historyService';
+import { planLink } from '../services/planLink';
 import type {
   BackendStatus,
   ConnectorStatus,
@@ -341,6 +342,7 @@ export function useNishState(settings: Settings, userId: string | null = null) {
         const res = await sendMessage(conv.messages, {
           demo: settingsRef.current.demoMode,
           browser: chromeLinkRef.current.status === 'connected',
+          context: planLink.getContext(),
         });
         stopSpeech();
         appendMessage(convId, {
@@ -373,6 +375,7 @@ export function useNishState(settings: Settings, userId: string | null = null) {
               });
             }
           }
+          void planLink.refresh();
         }
       } catch (err) {
         appendMessage(convId, {
@@ -601,6 +604,13 @@ export function useNishState(settings: Settings, userId: string | null = null) {
     if (!settings.demoMode && isBackendConfigured) void checkBackend();
   }, [settings.demoMode, checkBackend]);
 
+  // Wi-Fi came back: verify the backend again so the status recovers without a page refresh.
+  const prevOnline = useRef(online);
+  useEffect(() => {
+    if (online && !prevOnline.current && !settings.demoMode && isBackendConfigured) void checkBackend();
+    prevOnline.current = online;
+  }, [online, settings.demoMode, checkBackend]);
+
   const backendStatus: BackendStatus = settings.demoMode
     ? 'demo'
     : !isBackendConfigured
@@ -614,6 +624,7 @@ export function useNishState(settings: Settings, userId: string | null = null) {
         void handleHotkeyRef.current();
         return;
       }
+      if (e.event !== 'tts') return;
       switch (e.state) {
         case 'start':
           setPlayback({ status: 'playing', error: null });

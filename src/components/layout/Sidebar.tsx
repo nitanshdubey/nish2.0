@@ -1,6 +1,7 @@
 import {
     Brain,
     History as HistoryIcon,
+    CalendarClock,
     Home,
     PanelLeftClose,
     PanelLeftOpen,
@@ -19,6 +20,7 @@ import {
     { id: 'home', label: 'Home', icon: Home },
     { id: 'new', label: 'New Conversation', icon: SquarePen },
     { id: 'history', label: 'Conversation History', icon: HistoryIcon },
+    { id: 'planner', label: 'Planner', icon: CalendarClock },
     { id: 'tools', label: 'AI Tools', icon: Wrench },
     { id: 'automations', label: 'Automations', icon: Workflow },
     { id: 'memory', label: 'Memory', icon: Brain },

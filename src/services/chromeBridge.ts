@@ -1,4 +1,4 @@
-import type { BrowserAction } from '../types';
+import type { BrowserAction, PlanSnapshot } from '../types';
 
 const REQUEST = 'nish-web';
 const RESPONSE = 'nish-ext';
@@ -9,10 +9,13 @@ export interface BridgeResult {
   error?: string;
   version?: string;
   shortcut?: string;
+  snapshot?: PlanSnapshot;
 }
 
 export type ExtensionEvent =
   | { event: 'hotkey' }
+  | { event: 'plan' }
+  | { event: 'open-planner' }
   | { event: 'tts'; state: 'start' | 'end' | 'stopped' | 'error'; message?: string };
 
 let counter = 0;
@@ -75,8 +78,8 @@ export function onExtensionEvent(handler: (e: ExtensionEvent) => void): () => vo
     if (e.source !== window || e.origin !== window.location.origin) return;
     const d = e.data as { source?: string; event?: string; state?: string; message?: string } | null;
     if (!d || d.source !== RESPONSE || typeof d.event !== 'string') return;
-    if (d.event === 'hotkey') {
-      handler({ event: 'hotkey' });
+    if (d.event === 'hotkey' || d.event === 'plan' || d.event === 'open-planner') {
+      handler({ event: d.event });
     } else if (d.event === 'tts' && typeof d.state === 'string') {
       handler({ event: 'tts', state: d.state as 'start' | 'end' | 'stopped' | 'error', message: d.message });
     }

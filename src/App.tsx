@@ -13,9 +13,23 @@ import Memory from './pages/Memory';
 import Integrations from './pages/Integrations';
 import SettingsPage from './pages/Settings';
 import Login from './pages/Login';
+import Planner from './pages/Planner';
+import { onExtensionEvent } from './services/chromeBridge';
 
 export default function App() {
   const [page, setPage] = useState<PageId>('home');
+
+    // Notification clicks (or a #planner link) open the Planner.
+    useEffect(() => {
+      if (window.location.hash === '#planner') {
+        setPage('planner');
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
+      return onExtensionEvent((e) => {
+        if (e.event === 'open-planner') setPage('planner');
+      });
+    }, []);
+
   const { newConversation, hotkeyPulse } = useNish();
   const { session, loading } = useAuth();
   const { settings } = useSettings();
@@ -37,6 +51,8 @@ export default function App() {
     switch (page) {
       case 'history':
         return <History onOpen={() => setPage('home')} />;
+      case 'planner':
+        return <Planner />;
       case 'tools':
         return <AiTools />;
       case 'automations':

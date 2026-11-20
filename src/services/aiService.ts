@@ -36,7 +36,7 @@ function demoReply(input: string): string {
 /** Sends the conversation (last item = new user message). */
 export async function sendMessage(
   messages: Message[],
-  opts: { demo: boolean; browser?: boolean },
+  opts: { demo: boolean; browser?: boolean; context?: string },
 ): Promise<ChatReply> {
   if (opts.demo) {
     await wait(700 + Math.random() * 700);
@@ -48,6 +48,7 @@ export async function sendMessage(
       .filter((m) => !m.isError)
       .map((m) => ({ role: m.role, content: m.content })),
     browser: Boolean(opts.browser),
+    context: opts.context,
   });
   if (typeof data.reply !== 'string' || !data.reply.trim()) {
     throw new BackendError('INVALID_RESPONSE', 'The backend returned an empty reply.');

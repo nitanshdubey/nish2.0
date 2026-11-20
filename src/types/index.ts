@@ -5,7 +5,8 @@ export type PageId =
   | 'automations'
   | 'memory'
   | 'integrations'
-  | 'settings';
+  | 'settings'
+  | 'planner';
 
 export type NishState = 'standby' | 'listening' | 'processing' | 'responding';
 
@@ -81,9 +82,65 @@ export interface MemoryItem {
   text: string;
   createdAt: number;
 }
+export interface PlanDraft {
+  title: string;
+  start?: string;
+  inMinutes?: number;
+  durationMin?: number;
+  date?: string;
+  repeat?: 'none' | 'daily' | 'weekdays';
+  nonNegotiable?: boolean;
+  leadMin?: number;
+}
+
 export type BrowserAction =
   | { type: 'search_web'; query: string }
   | { type: 'open_website'; url: string }
-  | { type: 'switch_tab'; query: string };
+  | { type: 'switch_tab'; query: string }
+  | { type: 'add_plan_items'; items: PlanDraft[] }
+  | { type: 'remove_plan_item'; query: string }
+  | { type: 'mark_plan_item'; query: string; status: 'done' | 'skipped' };
 
 export type ConnectorStatus = 'checking' | 'connected' | 'not-detected';
+
+export interface PlanItem {
+  id: string;
+  title: string;
+  date: string;
+  start: string;
+  dur: number;
+  repeat: 'none' | 'daily' | 'weekdays';
+  nn: boolean;
+  lead: number;
+}
+
+export interface PlanOccurrence {
+  key: string;
+  id: string;
+  title: string;
+  start: string;
+  dur: number;
+  nn: boolean;
+  repeat: 'none' | 'daily' | 'weekdays';
+  lead: number;
+  startAt: number;
+  endAt: number | null;
+  state: 'pending' | 'done' | 'skipped';
+  snoozedUntil: number | null;
+}
+
+export interface PlanPrefs {
+  speak: boolean;
+  voice: VoicePreference;
+  rate: number;
+  defaultLead: number;
+}
+
+export interface PlanSnapshot {
+  version: string;
+  items: PlanItem[];
+  today: PlanOccurrence[];
+  dateStr: string;
+  prefs: PlanPrefs;
+  now: number;
+}
