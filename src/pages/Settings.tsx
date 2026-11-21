@@ -4,6 +4,7 @@ import { useNish } from '../context/NishContext';
 import { useSettings } from '../context/SettingsContext';
 import { isBackendConfigured } from '../services/supabaseClient';
 import { useAuth } from '../context/AuthContext';
+import WakePanel from '../components/settings/WakePanel';
 import {
   Banner,
   Chip,
@@ -208,6 +209,10 @@ export default function SettingsPage() {
           </div>
           {nish.healthError && <p className="mt-2 text-xs text-rose-400">{nish.healthError}</p>}
         </Panel>
+
+        <div className="xl:col-span-2">
+          <WakePanel />
+        </div>
 
         <Panel title="Privacy" icon={Mic} className="xl:col-span-2">
           <div className="grid gap-6 lg:grid-cols-2">

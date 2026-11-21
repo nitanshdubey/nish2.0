@@ -3,6 +3,15 @@ import type { BrowserAction, PlanSnapshot } from '../types';
 const REQUEST = 'nish-web';
 const RESPONSE = 'nish-ext';
 
+export interface WakeStatus {
+  enabled: boolean;
+  perm: boolean;
+  mode: 'offscreen' | 'tab';
+  state: string;
+  detail?: string;
+  lastWakeAt?: number;
+}
+
 export interface BridgeResult {
   ok: boolean;
   message?: string;
@@ -10,12 +19,15 @@ export interface BridgeResult {
   version?: string;
   shortcut?: string;
   snapshot?: PlanSnapshot;
+  command?: string;
+  wake?: WakeStatus;
 }
 
 export type ExtensionEvent =
   | { event: 'hotkey' }
   | { event: 'plan' }
   | { event: 'open-planner' }
+  | { event: 'wake'; command?: string }
   | { event: 'tts'; state: 'start' | 'end' | 'stopped' | 'error'; message?: string };
 
 let counter = 0;
@@ -76,10 +88,18 @@ export async function callExtension(payload: Record<string, unknown>, timeoutMs 
 export function onExtensionEvent(handler: (e: ExtensionEvent) => void): () => void {
   const listener = (e: MessageEvent) => {
     if (e.source !== window || e.origin !== window.location.origin) return;
-    const d = e.data as { source?: string; event?: string; state?: string; message?: string } | null;
+    const d = e.data as {
+      source?: string;
+      event?: string;
+      state?: string;
+      message?: string;
+      command?: string;
+    } | null;
     if (!d || d.source !== RESPONSE || typeof d.event !== 'string') return;
     if (d.event === 'hotkey' || d.event === 'plan' || d.event === 'open-planner') {
       handler({ event: d.event });
+    } else if (d.event === 'wake') {
+      handler({ event: 'wake', command: typeof d.command === 'string' ? d.command : undefined });
     } else if (d.event === 'tts' && typeof d.state === 'string') {
       handler({ event: 'tts', state: d.state as 'start' | 'end' | 'stopped' | 'error', message: d.message });
     }

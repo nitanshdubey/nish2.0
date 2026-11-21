@@ -31,6 +31,7 @@ const VAD_MAX_MS = 45000; // hard limit
 
 // True when the page was opened by the global shortcut (the extension adds #listen).
 const OPENED_BY_HOTKEY = typeof window !== 'undefined' && window.location.hash === '#listen';
+const OPENED_BY_WAKE = typeof window !== 'undefined' && window.location.hash === '#wake';
 
 const createConversation = (): Conversation => {
   const now = Date.now();
@@ -523,6 +524,22 @@ export function useNishState(settings: Settings, userId: string | null = null) {
   }, [recorder.isRecording, startRecording]);
   const handleHotkeyRef = useRef(handleHotkey);
   handleHotkeyRef.current = handleHotkey;
+    // "Wake up NISH": run the spoken command if there was one, otherwise start listening.
+    const handleWake = useCallback(
+      async (command?: string) => {
+        setHotkeyPulse((n) => n + 1);
+        const text = (command ?? '').trim();
+        if (text) {
+          await sendText(text);
+          return;
+        }
+        if (recorder.isRecording()) return;
+        await startRecording(true);
+      },
+      [sendText, recorder.isRecording, startRecording],
+    );
+    const handleWakeRef = useRef(handleWake);
+    handleWakeRef.current = handleWake;
 
   /* ---------------- Conversation management ---------------- */
   const newConversation = useCallback(() => {
@@ -624,6 +641,10 @@ export function useNishState(settings: Settings, userId: string | null = null) {
         void handleHotkeyRef.current();
         return;
       }
+      if (e.event === 'wake') {
+        void handleWakeRef.current(e.command);
+        return;
+      }
       if (e.event !== 'tts') return;
       switch (e.state) {
         case 'start':
@@ -656,6 +677,20 @@ export function useNishState(settings: Settings, userId: string | null = null) {
     }, 600);
     return () => window.clearTimeout(t);
   }, []);
+
+    // Page opened by the wake word: collect the spoken command from the extension, then act.
+    const wakeHandled = useRef(false);
+    useEffect(() => {
+      if (!OPENED_BY_WAKE) return;
+      const t = window.setTimeout(async () => {
+        if (wakeHandled.current) return;
+        wakeHandled.current = true;
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        const r = await callExtension({ type: 'wake_take' }, 3000);
+        void handleWakeRef.current(r.ok ? r.command : undefined);
+      }, 600);
+      return () => window.clearTimeout(t);
+    }, []);
 
   /* ---------------- Derived state ---------------- */
   const nishState: NishState =
