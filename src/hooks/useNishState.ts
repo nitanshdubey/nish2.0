@@ -31,7 +31,19 @@ const VAD_MAX_MS = 45000; // hard limit
 
 // True when the page was opened by the global shortcut (the extension adds #listen).
 const OPENED_BY_HOTKEY = typeof window !== 'undefined' && window.location.hash === '#listen';
+
 const OPENED_BY_WAKE = typeof window !== 'undefined' && window.location.hash === '#wake';
+const MAX_FOLLOW_UPS = 20; // safety limit for the hands-free loop (protects your free quota)
+const FOLLOW_UP_CUES = ["I'm listening.", 'Anything else?', 'Go ahead.', 'What else can I do?'];
+const END_PHRASE =
+  /^(?:(?:no|nope|nah)(?: thanks?| thank you)?|nothing(?: else)?|that'?s (?:all|it|everything)|that is all|stop(?: listening)?|(?:ok(?:ay)?,? )?thanks?(?: a lot| nish)?|thank you(?: so much)?|bye|goodbye|never ?mind|cancel|i'?m done|we'?re done|done)$/;
+
+function isEndPhrase(text: string): boolean {
+  const t = text.toLowerCase().replace(/[^a-z' ]/g, ' ').replace(/\s+/g, ' ').trim();
+  return END_PHRASE.test(t);
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const createConversation = (): Conversation => {
   const now = Date.now();
@@ -241,12 +253,16 @@ export function useNishState(settings: Settings, userId: string | null = null) {
     }, [userId, settings.demoMode, mutate, syncOk, syncFail]);
 
   /* ---------------- Spoken replies ---------------- */
-  const [playback, setPlayback] = useState<{ status: PlaybackStatus; error: string | null }>({
-    status: 'idle',
-    error: null,
-  });
-  const playbackRef = useRef(playback);
+  type PlaybackState = { status: PlaybackStatus; error: string | null };
+  const [playback, setPlaybackState] = useState<PlaybackState>({ status: 'idle', error: null });
+  const playbackRef = useRef<PlaybackState>(playback);
   playbackRef.current = playback;
+  // Updates the ref immediately, so the conversation loop can tell at once whether NISH is still speaking.
+  const setPlayback = useCallback((v: PlaybackState | ((p: PlaybackState) => PlaybackState)) => {
+    const next = typeof v === 'function' ? v(playbackRef.current) : v;
+    playbackRef.current = next;
+    setPlaybackState(next);
+  }, []);
   const speakTimer = useRef<number | undefined>(undefined);
 
   const stopSpeech = useCallback(() => {
@@ -331,9 +347,21 @@ export function useNishState(settings: Settings, userId: string | null = null) {
   /* ---------------- Assistant processing ---------------- */
   const [phase, setPhase] = useState<Phase>('idle');
   const processingRef = useRef(false);
+
+    // Conversation loop (hands-free follow-ups)
+    const voiceTurnRef = useRef(false); // the request being processed started by voice
+    const loopRef = useRef(false); // the current recording should start a conversation loop
+    const followUpRef = useRef(false); // the mic is open for a follow-up
+    const [followUp, setFollowUp] = useState(false);
+    const sessionIdRef = useRef(0);
+    const loopCountRef = useRef(0);
+    const cueIndexRef = useRef(0);
+    const continueRef = useRef<() => Promise<void>>(async () => {});
+    const endConversationRef = useRef<() => void>(() => {});
+    const speakCueRef = useRef<(text: string) => Promise<void>>(async () => {});
   const respondTimer = useRef<number | undefined>(undefined);
 
-  const runAssistant = useCallback(
+    const runAssistant = useCallback(
     async (convId: string) => {
       const conv = convRef.current.find((c) => c.id === convId);
       if (!conv) return;
@@ -378,7 +406,11 @@ export function useNishState(settings: Settings, userId: string | null = null) {
           }
           void planLink.refresh();
         }
+
+        // Voice request answered: wait for NISH to finish speaking, say a cue, and listen again.
+        if (voiceTurnRef.current) void continueRef.current();
       } catch (err) {
+        voiceTurnRef.current = false; // an error ends the hands-free loop
         appendMessage(convId, {
           id: uid(),
           role: 'assistant',
@@ -395,9 +427,15 @@ export function useNishState(settings: Settings, userId: string | null = null) {
   );
 
   const sendText = useCallback(
-    async (raw: string) => {
+    async (raw: string, opts?: { voice?: boolean }) => {
       const text = raw.trim();
       if (!text || processingRef.current || recorder.isRecording()) return;
+      if (opts?.voice) {
+        voiceTurnRef.current = settingsRef.current.continuousVoice;
+        loopRef.current = voiceTurnRef.current;
+      } else {
+        endConversationRef.current(); // typing cancels any pending hands-free loop
+      }
       const convId = activeRef.current;
       appendMessage(convId, { id: uid(), role: 'user', content: text, timestamp: Date.now() });
       await runAssistant(convId);
@@ -414,37 +452,44 @@ export function useNishState(settings: Settings, userId: string | null = null) {
   const stopRecordingRef = useRef<() => Promise<void>>(async () => {});
 
   // Watches the microphone level and stops by itself when you finish talking.
-  const startVad = useCallback(() => {
-    stopVad();
-    const began = Date.now();
-    let heard = false;
-    let lastVoice = began;
-    vadRef.current = window.setInterval(() => {
-      if (!recorder.isRecording()) {
-        stopVad();
-        return;
-      }
-      const now = Date.now();
-      if (recorder.getLevel() > VAD_THRESHOLD) {
-        heard = true;
-        lastVoice = now;
-      }
-      if (heard && now - lastVoice > VAD_SILENCE_MS) {
-        stopVad();
-        void stopRecordingRef.current();
-      } else if (!heard && now - began > VAD_NO_SPEECH_MS) {
-        stopVad();
-        recorder.cancel();
-        addNotice('I did not hear anything, so I stopped listening. Press the shortcut again when you are ready.');
-      } else if (now - began > VAD_MAX_MS) {
-        stopVad();
-        void stopRecordingRef.current();
-      }
-    }, 100);
-  }, [recorder.isRecording, recorder.getLevel, recorder.cancel, stopVad, addNotice]);
+  const startVad = useCallback(
+    (isFollowUp = false) => {
+      stopVad();
+      const began = Date.now();
+      let heard = false;
+      let lastVoice = began;
+      vadRef.current = window.setInterval(() => {
+        if (!recorder.isRecording()) {
+          stopVad();
+          return;
+        }
+        const now = Date.now();
+        if (recorder.getLevel() > VAD_THRESHOLD) {
+          heard = true;
+          lastVoice = now;
+        }
+        if (heard && now - lastVoice > VAD_SILENCE_MS) {
+          stopVad();
+          void stopRecordingRef.current();
+        } else if (!heard && now - began > VAD_NO_SPEECH_MS) {
+          stopVad();
+          if (isFollowUp) {
+            endConversationRef.current(); // nothing more to do: close the mic quietly
+          } else {
+            recorder.cancel();
+            addNotice('I did not hear anything, so I stopped listening. Press the shortcut again when you are ready.');
+          }
+        } else if (now - began > VAD_MAX_MS) {
+          stopVad();
+          void stopRecordingRef.current();
+        }
+      }, 100);
+    },
+    [recorder.isRecording, recorder.getLevel, recorder.cancel, stopVad, addNotice],
+  );
 
   const startRecording = useCallback(
-    async (auto = false): Promise<boolean> => {
+    async (auto = false, loop = auto, isFollowUp = false): Promise<boolean> => {
       const s = settingsRef.current;
       if (!s.voiceEnabled || s.interactionMode === 'text-only' || processingRef.current) return false;
       if (!onlineRef.current) {
@@ -455,7 +500,13 @@ export function useNishState(settings: Settings, userId: string | null = null) {
       }
       stopSpeech(); // talking over NISH interrupts it
       const ok = await recorder.start();
-      if (ok && auto) startVad();
+      if (ok) {
+        loopRef.current = loop && s.continuousVoice;
+        followUpRef.current = isFollowUp;
+        setFollowUp(isFollowUp);
+        loopCountRef.current = isFollowUp ? loopCountRef.current + 1 : 0;
+        if (auto) startVad(isFollowUp);
+      }
       return ok;
     },
     [recorder.start, stopSpeech, startVad, addNotice],
@@ -463,8 +514,15 @@ export function useNishState(settings: Settings, userId: string | null = null) {
 
   const stopRecording = useCallback(async () => {
     stopVad();
+    const wasFollowUp = followUpRef.current;
+    followUpRef.current = false;
+    setFollowUp(false);
     const result = await recorder.stop();
-    if (!result) return;
+    if (!result) {
+      if (wasFollowUp) endConversationRef.current();
+      return;
+    }
+    voiceTurnRef.current = loopRef.current;
     const convId = activeRef.current;
     const msgId = uid();
     appendMessage(convId, {
@@ -480,10 +538,29 @@ export function useNishState(settings: Settings, userId: string | null = null) {
       const text = await transcribeAudio(result.blob, { demo: settingsRef.current.demoMode });
       if (!text) throw new BackendError('INVALID_RESPONSE', 'No speech was detected in the recording.');
       updateMessage(convId, msgId, { content: text });
+
+      // "That's all", "no thanks", "stop": finish the conversation without asking the AI.
+      if (loopRef.current && isEndPhrase(text)) {
+        processingRef.current = false;
+        setPhase('idle');
+        endConversationRef.current();
+        void speakCueRef.current('Okay. I will be here when you need me.');
+        return;
+      }
+
       processingRef.current = false;
       await runAssistant(convId);
     } catch (err) {
       processingRef.current = false;
+      const noSpeech =
+        err instanceof BackendError && err.code === 'INVALID_RESPONSE' && err.message.startsWith('No speech');
+      if (wasFollowUp && noSpeech) {
+        // The follow-up window passed with nothing said: end quietly.
+        updateMessage(convId, msgId, { content: '(no further request)' });
+        setPhase('idle');
+        endConversationRef.current();
+        return;
+      }
       const detail = `${formatDuration(result.seconds)}, ${formatBytes(result.blob.size)}`;
       const content =
         err instanceof BackendError && err.code === 'DEMO_MODE'
@@ -491,20 +568,21 @@ export function useNishState(settings: Settings, userId: string | null = null) {
           : errorText(err);
       appendMessage(convId, { id: uid(), role: 'assistant', content, timestamp: Date.now(), isError: true });
       setPhase('idle');
+      endConversationRef.current();
     }
   }, [recorder.stop, stopVad, appendMessage, updateMessage, runAssistant]);
   stopRecordingRef.current = stopRecording;
 
   const toggleRecording = useCallback(async () => {
     if (recorder.isRecording()) await stopRecording();
-    else await startRecording(false);
+    else await startRecording(false, true);
   }, [recorder.isRecording, startRecording, stopRecording]);
 
   // Push-to-talk: hold to record, release to send.
   const holdRef = useRef(false);
   const pushStart = useCallback(async () => {
     holdRef.current = true;
-    const ok = await startRecording(false);
+    const ok = await startRecording(false, false);
     if (ok && !holdRef.current) await stopRecording(); // released during permission prompt
   }, [startRecording, stopRecording]);
   const pushEnd = useCallback(async () => {
@@ -530,7 +608,7 @@ export function useNishState(settings: Settings, userId: string | null = null) {
         setHotkeyPulse((n) => n + 1);
         const text = (command ?? '').trim();
         if (text) {
-          await sendText(text);
+          await sendText(text, { voice: true });
           return;
         }
         if (recorder.isRecording()) return;
@@ -540,6 +618,81 @@ export function useNishState(settings: Settings, userId: string | null = null) {
     );
     const handleWakeRef = useRef(handleWake);
     handleWakeRef.current = handleWake;
+
+      /* ---------------- Hands-free conversation loop ---------------- */
+  const waitForSpeechEnd = useCallback(async (maxMs: number) => {
+    const busy = () => ['loading', 'playing', 'paused'].includes(playbackRef.current.status);
+    const t0 = Date.now();
+    await sleep(250);
+    while (busy() && Date.now() - t0 < maxMs) await sleep(150);
+  }, []);
+
+  // A short spoken cue in the system voice (instant, offline), then wait until it has finished.
+  const speakCue = useCallback(
+    async (text: string) => {
+      if (!settingsRef.current.voiceEnabled) return;
+      const seq = ++speakSeq.current;
+      window.clearTimeout(speakTimer.current);
+      setPlayback({ status: 'loading', error: null });
+      await speakSystem(text, seq);
+      await waitForSpeechEnd(15000);
+    },
+    [speakSystem, waitForSpeechEnd, setPlayback],
+  );
+
+  const endConversation = useCallback(() => {
+    voiceTurnRef.current = false;
+    loopRef.current = false;
+    followUpRef.current = false;
+    setFollowUp(false);
+    sessionIdRef.current++;
+    stopVad();
+    if (recorder.isRecording()) recorder.cancel();
+  }, [stopVad, recorder.isRecording, recorder.cancel]);
+
+  const continueConversation = useCallback(async () => {
+    const s = settingsRef.current;
+    if (!s.continuousVoice || !s.voiceEnabled || s.interactionMode === 'text-only') {
+      endConversationRef.current();
+      return;
+    }
+    const myId = ++sessionIdRef.current;
+    const convId = activeRef.current;
+    const alive = () =>
+      sessionIdRef.current === myId &&
+      voiceTurnRef.current &&
+      activeRef.current === convId &&
+      !processingRef.current &&
+      !recorder.isRecording();
+
+    if (loopCountRef.current >= MAX_FOLLOW_UPS) {
+      appendMessage(convId, {
+        id: uid(),
+        role: 'assistant',
+        content: 'I stopped listening after a long conversation to save your free usage. Press the shortcut to continue.',
+        timestamp: Date.now(),
+      });
+      endConversationRef.current();
+      return;
+    }
+
+    await waitForSpeechEnd(90000); // let the answer finish first
+    if (!alive()) return;
+
+    const cue = FOLLOW_UP_CUES[cueIndexRef.current++ % FOLLOW_UP_CUES.length];
+    await speakCue(cue);
+    if (!alive()) return;
+
+    await sleep(300); // let the room go quiet before the mic opens
+    if (!alive()) return;
+
+    const ok = await startRecording(true, true, true);
+    if (!ok) endConversationRef.current();
+  }, [appendMessage, waitForSpeechEnd, speakCue, startRecording, recorder.isRecording]);
+
+  continueRef.current = continueConversation;
+  endConversationRef.current = endConversation;
+  speakCueRef.current = speakCue;
 
   /* ---------------- Conversation management ---------------- */
   const newConversation = useCallback(() => {
@@ -775,6 +928,7 @@ export function useNishState(settings: Settings, userId: string | null = null) {
     playback,
     togglePlayback,
     stopSpeech,
+    followUp,
     hotkeyPulse,
     // memory
     memory,

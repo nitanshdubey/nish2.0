@@ -49,6 +49,8 @@ export interface Settings {
   activationShortcut: ActivationShortcut;
   demoMode: boolean;
   memoryEnabled: boolean;
+  naturalVoice: boolean;
+  continuousVoice: boolean;
 }
 
 export type BackendStatus =

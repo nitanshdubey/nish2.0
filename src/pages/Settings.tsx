@@ -145,6 +145,14 @@ export default function SettingsPage() {
             checked={settings.pushToTalk}
             onChange={(v) => update('pushToTalk', v)}
           />
+
+                    <Toggle
+            label="Keep listening after each answer"
+            description="After NISH answers a voice command it says “I’m listening”, then opens the microphone again. If you say nothing, or say “that’s all”, it closes the microphone."
+            checked={settings.continuousVoice}
+            onChange={(v) => update('continuousVoice', v)}
+          />
+          
                     <div className="py-2.5">
             <p className="mb-2 text-sm">Activation shortcut</p>
             <div className="flex flex-wrap items-center gap-2">

@@ -6,7 +6,7 @@ import MicrophoneButton from '../components/voice/MicrophoneButton';
 import AudioPlayer from '../components/voice/AudioPlayer';
 import StatusPanel from '../components/dashboard/StatusPanel';
 import ChatPanel from '../components/conversation/ChatPanel';
-import { Banner } from '../components/ui/Primitives';
+import { Banner, Chip } from '../components/ui/Primitives';
 
 export default function Home() {
   const nish = useNish();
@@ -60,6 +60,8 @@ export default function Home() {
             onPressStart={() => void nish.pushStart()}
             onPressEnd={() => void nish.pushEnd()}
           />
+          
+                    {nish.followUp && <Chip tone="ok">CONVERSATION MODE · SAY “THAT’S ALL” TO END</Chip>}
 
           {recorder.error && (
             <div className="w-full max-w-sm">

@@ -14,6 +14,8 @@ export const DEFAULT_SETTINGS: Settings = {
   activationShortcut: 'Ctrl + Space',
   demoMode: true,
   memoryEnabled: true,
+  naturalVoice: true,
+  continuousVoice: true,
 };
 
 // Only harmless UI preferences are stored. No secrets, ever.
