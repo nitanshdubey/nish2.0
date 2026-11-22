@@ -252,97 +252,113 @@ export function useNishState(settings: Settings, userId: string | null = null) {
       };
     }, [userId, settings.demoMode, mutate, syncOk, syncFail]);
 
-  /* ---------------- Spoken replies ---------------- */
-  type PlaybackState = { status: PlaybackStatus; error: string | null };
-  const [playback, setPlaybackState] = useState<PlaybackState>({ status: 'idle', error: null });
-  const playbackRef = useRef<PlaybackState>(playback);
-  playbackRef.current = playback;
-  // Updates the ref immediately, so the conversation loop can tell at once whether NISH is still speaking.
-  const setPlayback = useCallback((v: PlaybackState | ((p: PlaybackState) => PlaybackState)) => {
-    const next = typeof v === 'function' ? v(playbackRef.current) : v;
-    playbackRef.current = next;
-    setPlaybackState(next);
-  }, []);
-  const speakTimer = useRef<number | undefined>(undefined);
-
-  const stopSpeech = useCallback(() => {
-    window.clearTimeout(speakTimer.current);
-    speech.stopBrowserSpeech();
-    if (chromeLinkRef.current.status === 'connected') void callExtension({ type: 'stop_speaking' }, 1500);
-    setPlayback({ status: 'idle', error: null });
-  }, []);
-
-  const speakText = useCallback(async (text: string) => {
-    const s = settingsRef.current;
-    const clean = text.trim();
-    if (!clean) return;
-    window.clearTimeout(speakTimer.current);
-    setPlayback({ status: 'loading', error: null });
-
-    // Safety net: some voices send no "finished" event, so reset the player after an estimated duration.
-    const armTimer = () => {
+    /* ---------------- Spoken replies ---------------- */
+    type PlaybackState = { status: PlaybackStatus; error: string | null };
+    const [playback, setPlaybackState] = useState<PlaybackState>({ status: 'idle', error: null });
+    const playbackRef = useRef<PlaybackState>(playback);
+    playbackRef.current = playback;
+    // Updates the ref immediately, so the conversation loop can tell at once whether NISH is still speaking.
+    const setPlayback = useCallback((v: PlaybackState | ((p: PlaybackState) => PlaybackState)) => {
+      const next = typeof v === 'function' ? v(playbackRef.current) : v;
+      playbackRef.current = next;
+      setPlaybackState(next);
+    }, []);
+    const speakTimer = useRef<number | undefined>(undefined);
+    const speakSeq = useRef(0);
+  
+    const stopSpeech = useCallback(() => {
+      speakSeq.current++;
       window.clearTimeout(speakTimer.current);
-      speakTimer.current = window.setTimeout(
-        () => setPlayback((p) => (p.status === 'playing' ? { status: 'ready', error: null } : p)),
-        Math.min(180000, 8000 + clean.length * 90),
-      );
-    };
-
-    if (chromeLinkRef.current.status === 'connected') {
       speech.stopBrowserSpeech();
-      const r = await callExtension(
-        { type: 'speak', text: clean, voice: s.preferredVoice, rate: s.speechSpeed },
-        4000,
-      );
-      if (!r.ok) {
-        setPlayback({ status: 'error', error: r.error ?? 'Could not start speech.' });
-        return;
-      }
-      setPlayback({ status: 'playing', error: null });
-      armTimer();
-      return;
-    }
-
-    speech.speakInBrowser(
-      clean,
-      { voice: s.preferredVoice, rate: s.speechSpeed },
-      {
-        onStart: () => {
+      if (chromeLinkRef.current.status === 'connected') void callExtension({ type: 'stop_speaking' }, 1500);
+      setPlayback({ status: 'idle', error: null });
+    }, [setPlayback]);
+  
+    // Speaks with the computer's own voice (through the Chrome connector when present, else the browser).
+    const speakSystem = useCallback(
+      async (clean: string, seq: number) => {
+        const s = settingsRef.current;
+        const armTimer = () => {
+          window.clearTimeout(speakTimer.current);
+          speakTimer.current = window.setTimeout(
+            () => setPlayback((p) => (p.status === 'playing' ? { status: 'ready', error: null } : p)),
+            Math.min(180000, 8000 + clean.length * 90),
+          );
+        };
+  
+        if (chromeLinkRef.current.status === 'connected') {
+          speech.stopBrowserSpeech();
+          const r = await callExtension(
+            { type: 'speak', text: clean, voice: s.preferredVoice, rate: s.speechSpeed },
+            4000,
+          );
+          if (seq !== speakSeq.current) return;
+          if (!r.ok) {
+            setPlayback({ status: 'error', error: r.error ?? 'Could not start speech.' });
+            return;
+          }
           setPlayback({ status: 'playing', error: null });
           armTimer();
-        },
-        onEnd: () => {
-          window.clearTimeout(speakTimer.current);
-          setPlayback({ status: 'ready', error: null });
-        },
-        onError: (message) => {
-          window.clearTimeout(speakTimer.current);
-          setPlayback({ status: 'error', error: message });
-        },
+          return;
+        }
+  
+        speech.speakInBrowser(
+          clean,
+          { voice: s.preferredVoice, rate: s.speechSpeed },
+          {
+            onStart: () => {
+              if (seq !== speakSeq.current) return;
+              setPlayback({ status: 'playing', error: null });
+              armTimer();
+            },
+            onEnd: () => {
+              if (seq !== speakSeq.current) return;
+              window.clearTimeout(speakTimer.current);
+              setPlayback({ status: 'ready', error: null });
+            },
+            onError: (message) => {
+              if (seq !== speakSeq.current) return;
+              window.clearTimeout(speakTimer.current);
+              setPlayback({ status: 'error', error: message });
+            },
+          },
+        );
       },
+      [setPlayback],
     );
-  }, []);
-
-  const togglePlayback = useCallback(() => {
-    const st = playbackRef.current.status;
-    if (st === 'loading') return;
-    const viaExtension = chromeLinkRef.current.status === 'connected';
-    if (st === 'playing') {
-      if (viaExtension) void callExtension({ type: 'pause_speaking' }, 1500);
-      else speech.pauseBrowserSpeech();
-      setPlayback({ status: 'paused', error: null });
-      return;
-    }
-    if (st === 'paused') {
-      if (viaExtension) void callExtension({ type: 'resume_speaking' }, 1500);
-      else speech.resumeBrowserSpeech();
-      setPlayback({ status: 'playing', error: null });
-      return;
-    }
-    const conv = convRef.current.find((c) => c.id === activeRef.current);
-    const last = [...(conv?.messages ?? [])].reverse().find((m) => m.role === 'assistant' && !m.isError);
-    if (last) void speakText(last.content);
-  }, [speakText]);
+  
+    const speakText = useCallback(
+      async (text: string) => {
+        const clean = speech.cleanForSpeech(text).trim();
+        if (!clean) return;
+        const seq = ++speakSeq.current;
+        window.clearTimeout(speakTimer.current);
+        setPlayback({ status: 'loading', error: null });
+        await speakSystem(clean, seq);
+      },
+      [speakSystem, setPlayback],
+    );
+  
+    const togglePlayback = useCallback(() => {
+      const st = playbackRef.current.status;
+      if (st === 'loading') return;
+      const viaExtension = chromeLinkRef.current.status === 'connected';
+      if (st === 'playing') {
+        if (viaExtension) void callExtension({ type: 'pause_speaking' }, 1500);
+        else speech.pauseBrowserSpeech();
+        setPlayback({ status: 'paused', error: null });
+        return;
+      }
+      if (st === 'paused') {
+        if (viaExtension) void callExtension({ type: 'resume_speaking' }, 1500);
+        else speech.resumeBrowserSpeech();
+        setPlayback({ status: 'playing', error: null });
+        return;
+      }
+      const conv = convRef.current.find((c) => c.id === activeRef.current);
+      const last = [...(conv?.messages ?? [])].reverse().find((m) => m.role === 'assistant' && !m.isError);
+      if (last) void speakText(last.content);
+    }, [speakText, setPlayback]);
 
   /* ---------------- Assistant processing ---------------- */
   const [phase, setPhase] = useState<Phase>('idle');
